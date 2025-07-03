@@ -1,49 +1,68 @@
 import torch
 import torch.nn as nn
-import torch.optim as optim
 from torchvision import transforms
+from torch.utils.data import Dataset, DataLoader
 from PIL import Image
+import pandas as pd
 
-# ✅ 모델 정의
-class CNN2D_LSTM(nn.Module):
-    def __init__(self, num_classes=4):
-        super(CNN2D_LSTM, self).__init__()
-        # CNN 블록
-        self.cnn = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=3, padding=1),  # 그레이스케일 1채널
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
+# ─── 데이터셋 ───
+class MultiECGDataset(Dataset):
+    def __init__(self, csv_file, img_dir, transform=None):
+        df = pd.read_csv(csv_file)
+        self.signals = torch.tensor(df.iloc[:, 1:1+L].values, dtype=torch.float32).unsqueeze(1)
+        self.img_paths = df['image_name'].values
+        self.meta = torch.tensor(df[['age','sex','...']].values, dtype=torch.float32)
+        self.labels = torch.tensor(df['label'].values, dtype=torch.long)
+        self.img_dir = img_dir
+        self.transform = transform
+
+    def __len__(self): return len(self.labels)
+    def __getitem__(self, idx):
+        img = Image.open(f"{self.img_dir}/{self.img_paths[idx]}").convert('L')
+        if self.transform: img = self.transform(img)
+        return self.signals[idx], img, self.meta[idx], self.labels[idx]
+
+# ─── 모델 ───
+class MultiModalFCA(nn.Module):
+    def __init__(self, signal_len, meta_dim, num_classes=3):
+        super().__init__()
+        # CNN1D for ECG signal
+        self.cnn1d = nn.Sequential(
+            nn.Conv1d(1,32,5,padding=2), nn.ReLU(), nn.MaxPool1d(2),
+            nn.Conv1d(32,64,5,padding=2), nn.ReLU(), nn.MaxPool1d(2)
         )
-        # LSTM 블록
-        self.lstm = nn.LSTM(input_size=64, hidden_size=128, batch_first=True)
-        # Fully Connected
-        self.fc = nn.Linear(128, num_classes)
+        # CNN2D for image
+        self.cnn2d = nn.Sequential(
+            nn.Conv2d(1,16,3,padding=1), nn.ReLU(), nn.MaxPool2d(2),
+            nn.Conv2d(16,32,3,padding=1), nn.ReLU(), nn.MaxPool2d(2),
+            nn.AdaptiveAvgPool2d((1,1))
+        )
+        # Metadata MLP
+        self.mlp_meta = nn.Sequential(nn.Linear(meta_dim,32), nn.ReLU())
+        # Fusion & FCA block
+        fused_dim = 64 + 32 + 32
+        self.fca = nn.Sequential(nn.Linear(fused_dim, fused_dim),
+                                  nn.Sigmoid())
+        # Classification
+        self.classifier = nn.Linear(fused_dim, num_classes)
 
-    def forward(self, x):
-        batch_size = x.size(0)
-        features = self.cnn(x)                   # (B, C, H, W)
-        features = torch.mean(features, dim=2)   # (B, C, W) 평균풀링
-        features = features.permute(0, 2, 1)     # (B, W, C)
-        lstm_out, _ = self.lstm(features)        # (B, W, 128)
-        out = lstm_out[:, -1, :]                 # 마지막 타임스텝
-        out = self.fc(out)
-        return out
+    def forward(self, sig, img, meta):
+        s = self.cnn1d(sig).mean(dim=2)
+        i = self.cnn2d(img).squeeze(-1).squeeze(-1)
+        m = self.mlp_meta(meta)
+        concat = torch.cat([s,i,m], dim=1)
+        weights = self.fca(concat)
+        fused = concat * weights
+        return self.classifier(fused)
 
-# ✅ 이미지 전처리
-transform = transforms.Compose([
-    transforms.Resize((128, 512)),  # 긴 ECG 폭 유지
-    transforms.Grayscale(),         # 흑백 변환
-    transforms.ToTensor(),
-])
+# ─── 학습 루프 ───
+# dataset, loader 설정 후
+model = MultiModalFCA(signal_len=L, meta_dim=M)
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-# ✅ 테스트
-img = Image.open("008ECG_lead2.jpg")
-img = transform(img).unsqueeze(0)  # (1, 1, H, W)
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = CNN2D_LSTM(num_classes=4).to(device)
-output = model(img.to(device))
-print("✅ Output logits:", output)
+for epoch in range(epochs):
+    for sig, img, meta, label in loader:
+        out = model(sig, img, meta)
+        loss = criterion(out, label)
+        optimizer.zero_grad(); loss.backward(); optimizer.step()
