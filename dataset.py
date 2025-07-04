@@ -1,69 +1,111 @@
-# split dataset
-import pandas as pd
+# dataset.py
+
 import os
-import shutil
+import torch
+from torch.utils.data import Dataset, DataLoader, Subset
+from torchvision import transforms
+from PIL import Image
+import pandas as pd
+from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
+import numpy as np
 
-def stratifySplit(split_ratios, csv_path, data_dir, output_dir):
-    """
-    Stratified split of data into train, val, test folders.
+class ECGMultimodalDataset(Dataset):
+    def __init__(self, config, transform=None):
+        self.config = config
+        self.transform = transform
 
-    Args:
-        split_ratios (list): [train_ratio, val_ratio, test_ratio], e.g., [0.7, 0.2, 0.1]
-        csv_path (str): Path to CSV file containing index and labels.
-        data_dir (str): Root directory containing data/<index>/*.jpeg
-        output_dir (str): Root directory where train/val/test folders will be created.
-    """
-    assert sum(split_ratios) == 1.0, "split_ratios must sum to 1.0"
-    train_ratio, val_ratio, test_ratio = split_ratios
+        # --- Load data ---
+        self.labels_df = pd.read_excel(config.label_file)
+        self.clinical_df = pd.read_excel(config.clinical_file)
+        self.ecg_signals = pd.read_csv(config.ecg_csv, index_col=0)
 
-    # 1. Load CSV
-    df = pd.read_csv(csv_path)  # assumes columns: index,label
-    print(f"Total samples: {len(df)}")
+        # --- Filter out 'borderline' labels ---
+        self.labels_df = self.labels_df[self.labels_df['Label'] != 'Borderline']
+        self.labels_df['Label'] = self.labels_df['Label'].map({'Normal': 0, 'Abnormal': 1})
 
-    # 2. Train/Val/Test Split
-    train_df, temp_df = train_test_split(
-        df, test_size=(1-train_ratio), stratify=df['label'], random_state=42
-    )
+        # --- Valid indices only ---
+        valid_indices = [i for i in range(1, 253) if i not in [17, 23, 36, 43, 51, 62, 115, 158]]
+        self.labels_df = self.labels_df[self.labels_df['IDX'].isin(valid_indices)]
 
-    relative_val_ratio = val_ratio / (val_ratio + test_ratio)  # Adjust ratio for temp split
-    val_df, test_df = train_test_split(
-        temp_df, test_size=(1-relative_val_ratio), stratify=temp_df['label'], random_state=42
-    )
+        # --- Scale ECG signals ---
+        self.ecg_scaler = StandardScaler()
+        self.ecg_signals_scaled = pd.DataFrame(
+            self.ecg_scaler.fit_transform(self.ecg_signals),
+            index=self.ecg_signals.index,
+            columns=self.ecg_signals.columns
+        )
 
-    print(f"Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
+        # --- Scale Clinical data ---
+        clinical_numeric = self.clinical_df.drop(columns=['IDX'])
+        self.clinical_scaler = StandardScaler()
+        self.clinical_scaled = pd.DataFrame(
+            self.clinical_scaler.fit_transform(clinical_numeric),
+            index=self.clinical_df['IDX'],
+            columns=clinical_numeric.columns
+        )
 
-    # 3. Copy files to output_dir/train, output_dir/val, output_dir/test
-    for split_name, split_df in zip(['train', 'val', 'test'], [train_df, val_df, test_df]):
-        split_path = os.path.join(output_dir, split_name)
-        os.makedirs(split_path, exist_ok=True)
+    def __len__(self):
+        return len(self.labels_df)
 
-        for idx in split_df['index']:
-            src_dir = os.path.join(data_dir, str(idx))
-            dst_dir = os.path.join(split_path, str(idx))
-            shutil.copytree(src_dir, dst_dir)
+    def __getitem__(self, idx):
+        row = self.labels_df.iloc[idx]
+        index = row['IDX']
+        label = row['Label']
 
-        print(f"Copied {len(split_df)} samples to {split_path}")
+        # --- Load ECG image ---
+        img_path = os.path.join(self.config.image_dir, str(index), f"{str(index).zfill(3)}ECG_lead2.jpg")
+        image = Image.open(img_path).convert('RGB')
 
-    print("✅ Stratified split completed.")
+        if self.transform:
+            image = self.transform(image)
 
-    return None
+        # --- ECG signal ---
+        ecg_signal = torch.tensor(self.ecg_signals_scaled.loc[index].values, dtype=torch.float)
 
-# # 사용 예시
-# split_ratios = [0.7, 0.2, 0.1]
-# csv_path = "labels.csv"           # index,label 형태
-# data_dir = "data"                 # data/1/*.jpeg 형태
-# output_dir = "output"             # 결과 train/val/test 저장
+        # --- Clinical features ---
+        clinical = torch.tensor(self.clinical_scaled.loc[index].values, dtype=torch.float)
 
-# stratifySplit(split_ratios, csv_path, data_dir, output_dir)
-
-
-
-# load dataset
-# 1. Image data
-def get2DImageData():
-
-
+        return image, ecg_signal, clinical, torch.tensor(label, dtype=torch.long)
 
 
-    return None
+def get_dataloaders(config):
+    transform = transforms.Compose([
+        transforms.Resize((config.img_height, config.img_width)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5] * 3, std=[0.5] * 3)
+    ])
+
+    full_dataset = ECGMultimodalDataset(config, transform=transform)
+
+    # === 안전하게 labels 추출 ===
+    labels_df = full_dataset.labels_df.reset_index(drop=True)
+    labels = labels_df['Label'].values
+
+    # NaN 확인 후 삭제
+    if pd.isnull(labels).any():
+        print(labels_df)
+        raise ValueError("🚨 labels에 NaN이 포함되어 있습니다. labels_df 내용을 다시 확인하세요!")
+
+    indices = np.arange(len(labels))
+
+    # === Stratified split ===
+    from sklearn.model_selection import train_test_split
+
+    train_idx, temp_idx, _, temp_y = train_test_split(
+        indices, labels, test_size=0.2, stratify=labels, random_state=config.seed)
+
+    val_idx, test_idx = train_test_split(
+        temp_idx, test_size=0.5, stratify=temp_y, random_state=config.seed)
+
+    print(f"🔍 Stratified split → Train: {len(train_idx)} | Val: {len(val_idx)} | Test: {len(test_idx)}")
+
+    train_ds = torch.utils.data.Subset(full_dataset, train_idx)
+    val_ds = torch.utils.data.Subset(full_dataset, val_idx)
+    test_ds = torch.utils.data.Subset(full_dataset, test_idx)
+
+    train_loader = DataLoader(train_ds, batch_size=config.batch_size, shuffle=True, num_workers=2)
+    val_loader = DataLoader(val_ds, batch_size=config.batch_size, shuffle=False, num_workers=2)
+    test_loader = DataLoader(test_ds, batch_size=config.batch_size, shuffle=False, num_workers=2)
+
+    return train_loader, val_loader, test_loader
