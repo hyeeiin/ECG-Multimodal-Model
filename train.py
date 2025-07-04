@@ -10,47 +10,39 @@ from tqdm import tqdm
 
 from config import Config
 from dataset import get_dataloaders
-from multimodal import ECGMultimodalModel  # 모델 클래스명 맞춰주세요!
+from multimodal import ECGMultimodalModel
+
+from sklearn.metrics import roc_auc_score, f1_score, confusion_matrix, ConfusionMatrixDisplay, classification_report, roc_curve
+import matplotlib.pyplot as plt
+import numpy as np
 
 def main():
-    # Seed 고정
     torch.manual_seed(Config.seed)
-
-    # Device
     device = torch.device(Config.device)
     print(f"📍 Using device: {device}")
 
-    # Data
     train_loader, val_loader, test_loader = get_dataloaders(Config)
 
-    # Model
     model = ECGMultimodalModel(Config).to(device)
-
-    # Loss & Optimizer
     criterion = nn.CrossEntropyLoss()
     optimizer = Adam(model.parameters(), lr=Config.lr)
 
-    # TensorBoard & Checkpoint
     modeltime = time.strftime('%m%d_%H%M%S', time.localtime())
     writer = SummaryWriter(f"runs/{modeltime}")
 
     checkpoint_dir = os.path.join(Config.checkpoint_dir, modeltime)
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    # Early stopping vars
     min_val_loss = float('inf')
     early_stop_counter = 0
 
-    # Epoch loop
-    for epoch in range(Config.num_epochs):
+    for epoch in tqdm(range(Config.num_epochs)):
         print(f"\n=== Epoch [{epoch+1}/{Config.num_epochs}] ===")
 
         model.train()
         train_loss, correct_train, total_train = 0.0, 0, 0
 
-        loop = tqdm(train_loader, desc="Training")
-
-        for images, ecg_signals, clinical, labels in loop:
+        for images, ecg_signals, clinical, labels in tqdm(train_loader, desc="Training"):
             images, ecg_signals, clinical, labels = (
                 images.to(device), ecg_signals.to(device), clinical.to(device), labels.to(device)
             )
@@ -73,14 +65,11 @@ def main():
         # Validation
         model.eval()
         val_loss, correct_val, total_val = 0.0, 0, 0
-
         with torch.no_grad():
-            loop = tqdm(val_loader, desc="Validating")
-            for images, ecg_signals, clinical, labels in loop:
+            for images, ecg_signals, clinical, labels in tqdm(val_loader, desc="Validating"):
                 images, ecg_signals, clinical, labels = (
                     images.to(device), ecg_signals.to(device), clinical.to(device), labels.to(device)
                 )
-
                 outputs = model(images, ecg_signals, clinical)
                 loss = criterion(outputs, labels)
 
@@ -95,13 +84,11 @@ def main():
         print(f"Train Loss: {avg_train_loss:.4f} | Train Acc: {train_acc:.4f}")
         print(f" Val Loss: {avg_val_loss:.4f} | Val Acc: {val_acc:.4f}")
 
-        # TensorBoard logging
         writer.add_scalar("Loss/Train", avg_train_loss, epoch)
         writer.add_scalar("Loss/Val", avg_val_loss, epoch)
         writer.add_scalar("Accuracy/Train", train_acc, epoch)
         writer.add_scalar("Accuracy/Val", val_acc, epoch)
 
-        # Save best checkpoint
         if avg_val_loss < min_val_loss:
             ckpt_path = os.path.join(checkpoint_dir, f"best_epoch{epoch+1}.pth")
             torch.save(model.state_dict(), ckpt_path)
@@ -111,27 +98,73 @@ def main():
         else:
             early_stop_counter += 1
             if early_stop_counter >= Config.patience:
-                print(f"⏹️ Early stopping at epoch {epoch+1} (patience={Config.patience})")
+                print(f"⏹️ Early stopping at epoch {epoch+1}")
                 break
-
+    
+    writer.flush()
     writer.close()
     print("🎉 Training completed!")
 
-    # Optional: test set evaluation
+    # Test loop
     model.eval()
-    correct_test, total_test = 0, 0
+    all_preds = []
+    all_probs = []
+    all_labels = []
+
     with torch.no_grad():
         for images, ecg_signals, clinical, labels in tqdm(test_loader, desc="Testing"):
-            images, ecg_signals, clinical, labels = (
-                images.to(device), ecg_signals.to(device), clinical.to(device), labels.to(device)
-            )
-            outputs = model(images, ecg_signals, clinical)
-            _, predicted = outputs.max(1)
-            total_test += labels.size(0)
-            correct_test += predicted.eq(labels).sum().item()
+            images, ecg_signals, clinical = images.to(device), ecg_signals.to(device), clinical.to(device)
+            labels = labels.to(device)
 
-    test_acc = correct_test / total_test
-    print(f"\n✅ Final Test Accuracy: {test_acc:.4f}")
+            outputs = model(images, ecg_signals, clinical)
+
+            probs = torch.softmax(outputs, dim=1)[:, 1]  # class 1 확률만
+            _, predicted = outputs.max(1)
+
+            all_preds.extend(predicted.cpu().numpy())
+            all_probs.extend(probs.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+
+    # === Metrics ===
+    y_true = np.array(all_labels)
+    y_pred = np.array(all_preds)
+    y_proba = np.array(all_probs)
+
+    acc = (y_true == y_pred).mean()
+    f1 = f1_score(y_true, y_pred)
+    try:
+        auc = roc_auc_score(y_true, y_proba)
+    except ValueError:
+        auc = float('nan')
+
+    print(f"\n✅ Final Test Accuracy: {acc:.4f}")
+    print(f"✅ Final Test F1-Score : {f1:.4f}")
+    print(f"✅ Final Test ROC AUC  : {auc:.4f}")
+
+    # === Classification report ===
+    print("\n=== Classification Report ===")
+    print(classification_report(y_true, y_pred, target_names=['Normal', 'Abnormal']))
+
+    # === Confusion matrix ===
+    cm = confusion_matrix(y_true, y_pred)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Normal', 'Abnormal'])
+    disp.plot(cmap=plt.cm.Blues)
+    plt.title("Confusion Matrix (Test Set)")
+    plt.show()
+
+    # === ROC curve ===
+    fpr, tpr, thresholds = roc_curve(y_true, y_proba)
+
+    plt.figure(figsize=(6, 6))
+    plt.plot(fpr, tpr, label=f'ROC curve (AUC = {auc:.4f})')
+    plt.plot([0, 1], [0, 1], 'k--', label='Random Guess')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('ROC Curve (Test Set)')
+    plt.legend(loc='lower right')
+    plt.grid(True)
+    plt.show()
+
 
 if __name__ == "__main__":
     main()
