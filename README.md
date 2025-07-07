@@ -9,6 +9,7 @@ This project implements a **multimodal deep learning model** to classify ECG sig
 
 ## 📂 Project Structure
 
+```text
 ECG-Multimodal-Model/
 ├── data/
       ├── images/
@@ -26,6 +27,7 @@ ECG-Multimodal-Model/
 ├── checkpoints/
 ├── runs/
 └── output/
+```
 
 
 ---
