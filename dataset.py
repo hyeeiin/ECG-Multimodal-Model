@@ -127,6 +127,7 @@ def get_dataloaders(config):
     )
 
     print(f"🔍 Split: Train={len(train_idx)} Val={len(val_idx)} Test={len(test_idx)}")
+    print(f"test index: {test_idx}")
 
     train_ds = Subset(dataset, train_idx)
     val_ds = Subset(dataset, val_idx)

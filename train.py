@@ -35,6 +35,7 @@ def main():
 
     min_val_loss = float('inf')
     early_stop_counter = 0
+    lr_reduce_counter = 0
 
     for epoch in tqdm(range(Config.num_epochs)):
         print(f"\n=== Epoch [{epoch+1}/{Config.num_epochs}] ===")
@@ -95,8 +96,19 @@ def main():
             print(f"✅ Saved best model to {ckpt_path}")
             min_val_loss = avg_val_loss
             early_stop_counter = 0
+            lr_reduce_counter = 0
         else:
             early_stop_counter += 1
+            lr_reduce_counter += 1
+
+            if lr_reduce_counter >= 2:
+                for param_group in optimizer.param_groups:
+                    old_lr = param_group['lr']
+                    new_lr = old_lr / 10
+                    param_group['lr'] = new_lr
+                print(f"🔻 LR reduced from {old_lr:.2e} to {new_lr:.2e} due to no improvement for 2 epochs.")
+                lr_reduce_counter = 0  # 다시 카운터 리셋
+
             if early_stop_counter >= Config.patience:
                 print(f"⏹️ Early stopping at epoch {epoch+1}")
                 break
@@ -141,6 +153,10 @@ def main():
     print(f"✅ Final Test F1-Score : {f1:.4f}")
     print(f"✅ Final Test ROC AUC  : {auc:.4f}")
 
+    # output directory 생성
+    output_dir = os.path.join('./output', modeltime)
+    os.makedirs(output_dir, exist_ok=True)
+
     # === Classification report ===
     print("\n=== Classification Report ===")
     print(classification_report(y_true, y_pred, target_names=['Normal', 'Abnormal']))
@@ -150,6 +166,7 @@ def main():
     disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Normal', 'Abnormal'])
     disp.plot(cmap=plt.cm.Blues)
     plt.title("Confusion Matrix (Test Set)")
+    plt.savefig(f"./output/{modeltime}/confusion_matrix.png")
     plt.show()
 
     # === ROC curve ===
@@ -163,6 +180,7 @@ def main():
     plt.title('ROC Curve (Test Set)')
     plt.legend(loc='lower right')
     plt.grid(True)
+    plt.savefig(f"./output/{modeltime}/roc_curve.png")
     plt.show()
 
 
