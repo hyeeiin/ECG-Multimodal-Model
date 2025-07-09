@@ -27,6 +27,10 @@ class Config:
     lr = 1e-4
     patience = 5
 
+    # CV Settings
+    k_outer = 5
+    k_inner = 3
+
     # Checkpoint dir
     checkpoint_dir = "./checkpoints"
 

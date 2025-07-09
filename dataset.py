@@ -73,6 +73,7 @@ def get_dataloaders(config):
     # === Load data ===
     labels_df = pd.read_excel(config.label_file)
     clinical_df = pd.read_excel(config.clinical_file)
+    clinical_df = clinical_df[['Wt','AGE','IDX']] # 상관 있는 변수만 사용
     ecg_signals = pd.read_csv(config.ecg_csv, index_col=0)
 
     # === Preprocessing ===
@@ -117,12 +118,24 @@ def get_dataloaders(config):
         temp_idx, test_size=0.5, stratify=temp_y, random_state=config.seed
     )
 
+    # # ✅ 전체의 30%가 temp → 1/3 val = 10%, 2/3 test = 20%
+    # train_idx, temp_idx, _, temp_y = train_test_split(
+    #     indices, labels, test_size=0.3, stratify=labels, random_state=config.seed
+    # )
+
+    # val_idx, test_idx = train_test_split(
+    #     temp_idx, test_size=(2/3), stratify=temp_y, random_state=config.seed
+    # )
+
+
     print(f"🔍 Split: Train={len(train_idx)} Val={len(val_idx)} Test={len(test_idx)}")
-    print(f"Test indices : {test_idx}")
 
     train_indices = labels_df.iloc[train_idx]['index'].tolist()
     val_indices = labels_df.iloc[val_idx]['index'].tolist()
     test_indices = labels_df.iloc[test_idx]['index'].tolist()
+
+    print(f"val indeices: {val_indices}")
+    print(f"test indices: {test_indices}")
 
     train_ecg = ecg_signals.loc[ecg_signals.index.isin(train_indices)]
     ecg_scaler = StandardScaler().fit(train_ecg)
@@ -142,3 +155,61 @@ def get_dataloaders(config):
     test_loader = DataLoader(test_ds, batch_size=config.batch_size, shuffle=False, num_workers=2)
 
     return train_loader, val_loader, test_loader
+
+def get_testloader(config, test_indices):
+    """
+    ✅ test_indices: 네가 직접 지정한 index 리스트
+    ✅ train/val split 없이 scaler는 train_loader에서 저장한 scaler로 사용하면 좋음.
+       여기선 편의상 test 데이터만 로딩하도록 예시로 작성!
+    """
+
+    transform = transforms.Compose([
+        transforms.Resize((config.img_height, config.img_width)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5]*3, std=[0.5]*3)
+    ])
+    transform.config = config
+
+    # === Load raw data ===
+    labels_df = pd.read_excel(config.label_file)
+    clinical_df = pd.read_excel(config.clinical_file)
+    clinical_df = clinical_df[['Wt','AGE','IDX']]  # 필요한 컬럼만
+    ecg_signals = pd.read_csv(config.ecg_csv, index_col=0)
+
+    # === Preprocessing ===
+    labels_df = labels_df[labels_df['label'] != 'Borderline']
+    labels_df['label'] = labels_df['label'].map({'Normal': 0, 'Abnormal': 1})
+
+    if 'IDX' in clinical_df.columns:
+        clinical_df = clinical_df.rename(columns={'IDX': 'index'})
+
+    labels_df['index'] = labels_df['index'].astype(int)
+    clinical_df['index'] = clinical_df['index'].astype(int)
+    ecg_signals.index = ecg_signals.index.astype(int)
+
+    image_indices = set(int(folder) for folder in os.listdir(config.image_dir) if folder.isdigit())
+    known_missing = {17, 23, 36, 43, 51, 62, 115, 158}
+    image_indices -= known_missing
+
+    label_indices = set(labels_df['index'])
+    ecg_indices = set(ecg_signals.index)
+    clinical_indices = set(clinical_df['index'])
+
+    common_indices = label_indices & ecg_indices & clinical_indices & image_indices
+
+    # ✅ 주어진 test_indices만 유효한 것으로 필터링
+    valid_test_indices = list(set(test_indices) & common_indices)
+    print(f"✅ Valid Test Indices: {valid_test_indices}")
+
+    # === 스케일러: 보통은 train에서 가져와야 안전, 여기선 fit 예시로 보여줌 ===
+    train_like_ecg = ecg_signals.loc[ecg_signals.index.isin(valid_test_indices)]
+    ecg_scaler = StandardScaler().fit(train_like_ecg)
+
+    train_like_clinical = clinical_df[clinical_df['index'].isin(valid_test_indices)].drop(columns=['index'])
+    clinical_scaler = StandardScaler().fit(train_like_clinical)
+
+    test_ds = ECGMultimodalDataset(valid_test_indices, labels_df, ecg_signals, clinical_df,
+                                   ecg_scaler, clinical_scaler, transform)
+
+    test_loader = DataLoader(test_ds, batch_size=config.batch_size, shuffle=False, num_workers=2)
+    return test_loader
