@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-import shap
+import FinalProject.shap_fusion as shap_fusion
 import matplotlib.pyplot as plt
 from torch.autograd import Variable
 from config import Config
@@ -59,15 +59,15 @@ class GradCAM:
 
 
 def explain_ecg_signal(model, background, ecg_signal_sample):
-    explainer = shap.DeepExplainer(model.signal_encoder, background)
+    explainer = shap_fusion.DeepExplainer(model.signal_encoder, background)
     shap_values = explainer.shap_values(ecg_signal_sample)
-    shap.summary_plot(shap_values, ecg_signal_sample.cpu().numpy())
+    shap_fusion.summary_plot(shap_values, ecg_signal_sample.cpu().numpy())
 
 
 def explain_clinical(model, background, clinical_sample):
-    explainer = shap.Explainer(model.clinical_encoder, background)
+    explainer = shap_fusion.Explainer(model.clinical_encoder, background)
     shap_values = explainer(clinical_sample)
-    shap.plots.waterfall(shap_values[0])
+    shap_fusion.plots.waterfall(shap_values[0])
 
 
 def run_xai_example(model, image, ecg_signal, clinical, device):

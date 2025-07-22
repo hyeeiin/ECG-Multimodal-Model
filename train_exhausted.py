@@ -16,7 +16,10 @@ from tqdm import tqdm
 
 from config import Config
 from dataset_kfold import get_all_data, ECGMultimodalDataset
-from multimodal import ECGMultimodalModel
+#########################################################################
+# from multimodal import ECGMultimodalModel
+from multimodal_paper import ECGMultimodalModel
+#########################################################################
 
 
 def train_inner(train_idx, val_idx, labels_df, ecg_signals, clinical_df, transform, run_dir):
@@ -55,10 +58,26 @@ def train_inner(train_idx, val_idx, labels_df, ecg_signals, clinical_df, transfo
                 labels.to(Config.device)
             )
             optimizer.zero_grad()
-            outputs = model(images, ecg_signals, clinical)
-            loss = criterion(outputs, labels)
+            #########################################################################
+            # train.py
+            # outputs = model(images, ecg_signals, clinical)
+            # loss = criterion(outputs, labels)
+
+            # train_paper.py
+            img_logits, signal_logits, clinical_logits, outputs = model(images, ecg_signals, clinical)
+
+            # ✅ Branch + Fusion Loss
+            loss_img = criterion(img_logits, labels)
+            loss_signal = criterion(signal_logits, labels)
+            loss_clinical = criterion(clinical_logits, labels)
+            loss_fusion = criterion(outputs, labels)
+
+            loss = loss_img + loss_signal + loss_clinical + loss_fusion
+            #########################################################################
+
             loss.backward()
             optimizer.step()
+
             train_loss += loss.item()
             _, predicted = outputs.max(1)
             total_train += labels.size(0)
@@ -77,7 +96,14 @@ def train_inner(train_idx, val_idx, labels_df, ecg_signals, clinical_df, transfo
                     clinical.to(Config.device),
                     labels.to(Config.device)
                 )
-                outputs = model(images, ecg_signals, clinical)
+                #########################################################################
+                # train.py
+                # outputs = model(images, ecg_signals, clinical)
+                
+                # train_paper.py
+                _, _, _, outputs = model(images, ecg_signals, clinical)
+                #########################################################################
+
                 loss = criterion(outputs, labels)
                 val_loss += loss.item()
                 _, predicted = outputs.max(1)
@@ -105,7 +131,8 @@ def train_inner(train_idx, val_idx, labels_df, ecg_signals, clinical_df, transfo
                 lr_reduce_counter = 0
             if early_stop_counter >= Config.patience:
                 break
-
+    
+    writer.flush()
     writer.close()
 
 
@@ -120,7 +147,14 @@ def test_outer(model, test_loader, device):
                 ecg_signals.to(device),
                 clinical.to(device)
             )
-            outputs = model(images, ecg_signals, clinical)
+            #########################################################################
+            # train.py
+            # outputs = model(images, ecg_signals, clinical)
+
+            # train_paper.py
+            _, _, _, outputs = model(images, ecg_signals, clinical)
+            #########################################################################
+
             probs = torch.softmax(outputs, dim=1)[:, 1].cpu().numpy()
             all_probs.extend(probs)
             all_labels.extend(labels.numpy())

@@ -96,9 +96,12 @@ def main():
         writer.add_scalar("Accuracy/Train", train_acc, epoch)
         writer.add_scalar("Accuracy/Val", val_acc, epoch)
 
+        torch.save(model.state_dict(), os.path.join(checkpoint_dir, f"last.pth"))
+
         if avg_val_loss < min_val_loss:
             ckpt_path = os.path.join(checkpoint_dir, f"best_epoch{epoch+1}.pth")
             torch.save(model.state_dict(), ckpt_path)
+            torch.save(model.state_dict(), os.path.join(checkpoint_dir, f"best.pth"))
             print(f"✅ Saved best model to {ckpt_path}")
             min_val_loss = avg_val_loss
             early_stop_counter = 0
@@ -124,6 +127,7 @@ def main():
     print("🎉 Training completed!")
 
     # Test loop
+    model.load_state_dict(torch.load(os.path.join(checkpoint_dir, f"best.pth")))
     model.eval()
     all_preds = []
     all_probs = []
