@@ -18,3 +18,5 @@
 ./output/
 /output/
 ./output
+
+./ocr/vision_key.json

@@ -3,11 +3,30 @@
 import torch
 import torch.nn as nn
 import torchvision.models as models
-from pytorch_tabnet.tab_network import TabNetNoEmbeddings
-import matplotlib.pyplot as plt
-import os
-import numpy as np
-import seaborn as sns
+from torchvision.models import ResNet18_Weights
+
+# === 기존 SEBlock, BasicBlock1D, ResNet1D_SE는 그대로 사용 ===
+# 그대로 사용하면 돼!
+
+# class AttentionFusion(nn.Module):
+#     """
+#     Modal chunk별 attention weight learnable scalar로 학습.
+#     """
+#     def __init__(self, dims):
+#         super().__init__()
+#         self.image_w = nn.Parameter(torch.ones(1) * 1.0)
+#         self.signal_w = nn.Parameter(torch.ones(1) * 1.0)
+#         self.clinical_w = nn.Parameter(torch.ones(1) * 1.0)
+#         self.norm = nn.LayerNorm(sum(dims))
+
+#     def forward(self, img_feat, signal_feat, clinical_feat):
+#         fused = torch.cat([
+#             self.image_w * img_feat,
+#             self.signal_w * signal_feat,
+#             self.clinical_w * clinical_feat
+#         ], dim=1)
+#         fused = self.norm(fused)
+#         return fused
 
 class AttentionFusion(nn.Module):
     def __init__(self, dims):
@@ -105,150 +124,74 @@ class ResNet1D_SE(nn.Module):
         x = self.global_pool(x)
         return self.classifier(x)
 
+# class TransformerEncoder1D(nn.Module):
+#     """
+#     Simple 1D Transformer Encoder Block for signal
+#     """
+#     def __init__(self, d_model, nhead, num_layers, dim_feedforward=128, dropout=0.1):
+#         super(TransformerEncoder1D, self).__init__()
+#         encoder_layer = nn.TransformerEncoderLayer(
+#             d_model=d_model,
+#             nhead=nhead,
+#             dim_feedforward=dim_feedforward,
+#             dropout=dropout,
+#             batch_first=True  # use [B, L, C]
+#         )
+#         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
-class ClinicalTabNetEncoder(nn.Module):
-    def __init__(self, input_dim, latent_dim=32, device=None):
-        super().__init__()
-        self.device = device
-        self.latent_dim = latent_dim
-        self.tabnet = TabNetNoEmbeddings(
-            input_dim=input_dim,
-            output_dim=latent_dim,
-            n_d=latent_dim,
-            n_a=latent_dim,
-            n_steps=3,
-            gamma=1.5,
-            n_independent=2,
-            n_shared=2
-        ).to(device)
-
-    def _move_buffers_to_device(self):
-        """
-        ✅ TabNet 내부 버퍼들을 디바이스에 맞게 이동
-        """
-        for name, buf in self.tabnet.named_buffers():
-            if buf.device != self.device:
-                # print(f"⚠️ Buffer {name} was on {buf.device} → moving to {self.device}")
-                buf.data = buf.data.to(self.device)
-
-        # ✅ 특수 group_attention_matrix 별도로 확인
-        if hasattr(self.tabnet.encoder, 'group_attention_matrix'):
-            if self.tabnet.encoder.group_attention_matrix.device != self.device:
-                self.tabnet.encoder.group_attention_matrix = self.tabnet.encoder.group_attention_matrix.to(self.device)
-                # print(f"✔️ Moved group_attention_matrix to {self.device}")
-
-    def forward(self, x):
-        """
-        ✅ 학습/추론용 안전 forward:
-        - TabNet 공식 forward만 사용 → 내부에서 encoder, prior 등 다 관리
-        - 반환: output (latent vector), M_loss (마스크 loss)
-        """
-        x = x.to(self.device)
-        out, M_loss = self.tabnet(x)
-        return out, M_loss
-
-    def load_pretrained_partial(self, weight_path):
-        """
-        ✅ output layer 제외하고 encoder만 가져오기
-        """
-        print(f"🔄 Loading partial TabNet weights from {weight_path}")
-        saved_state = torch.load(weight_path, map_location=self.device)  # map_location 추가!!
-        filtered_state = {k: v for k, v in saved_state.items() if 'final_mapping' not in k}
-        self.tabnet.load_state_dict(filtered_state, strict=False)
-
-        print(f"✅ Loaded TabNet encoder weights (latent_dim adapted to {self.latent_dim})")
-        # for key in saved_state.keys():
-        #     print(key)
-        # TabNet의 initial_bn.running_mean 텐서 확인
-        if 'encoder.tabnet.initial_bn.running_mean' in saved_state:
-            input_dim = saved_state['encoder.tabnet.initial_bn.running_mean'].shape[0]
-            print(f"✅ This TabNet model was trained with input_dim = {input_dim}")
-        else:
-            print("❌ Couldn't find 'encoder.tabnet.initial_bn.running_mean' in state_dict keys.")
-        self._move_buffers_to_device()
-
-    def visualize_masks(self, X, feature_names=None, save_dir="./shap", base_filename="mask"):
-        """
-        ✅ step별 mask 시각화:
-        - TabNet의 forward_masks() 사용 (공식 지원)
-        """
-        self.tabnet.eval()
-
-        # numpy 또는 tensor 입력 지원
-        if isinstance(X, np.ndarray):
-            X_tensor = torch.FloatTensor(X).to(self.device)
-        else:
-            X_tensor = X.to(self.device)
-
-        with torch.no_grad():
-            outputs = self.tabnet.forward_masks(X_tensor)
-            # forward_masks()는 (output, M_explain, masks) 반환
-            if len(outputs) == 3:
-                output, M_explain, masks = outputs
-                masks = [mask.detach().cpu().numpy() for mask in masks]
-            else:
-                output, M_explain = outputs
-                masks = []
-
-            print("DEBUG type(M_explain):", type(M_explain))
+#     def forward(self, x):
+#         # Input shape: [B, C, L] → [B, L, C]
+#         x = x.permute(0, 2, 1)
+#         out = self.transformer_encoder(x)
+#         # [B, L, C] → [B, C, L]
+#         out = out.permute(0, 2, 1)
+#         return out
 
 
-        os.makedirs(save_dir, exist_ok=True)
+# class SignalEncoder_1DTransformer_SE(nn.Module):
+    # """
+    # Signal encoder: 1D Conv Stem + Transformer + SE + GAP + FC
+    # """
+    # def __init__(self, input_channels=1, embedding_dim=128):
+    #     super(SignalEncoder_1DTransformer_SE, self).__init__()
 
-        if feature_names is None:
-            feature_names = [f"var_{i}" for i in range(X_tensor.shape[1])]
+    #     # ✅ Conv Stem: low-level feature extraction
+    #     self.stem = nn.Sequential(
+    #         nn.Conv1d(input_channels, 64, kernel_size=7, stride=2, padding=3),
+    #         nn.BatchNorm1d(64),
+    #         nn.ReLU(inplace=True),
+    #         nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
+    #     )
 
-        if isinstance(M_explain, dict):
-            step_masks = []
-            for step, mask_tensor in M_explain.items():
-                mask_np = mask_tensor.detach().cpu().numpy()
-                step_masks.append(mask_np)
+    #     # ✅ Transformer block
+    #     self.transformer = TransformerEncoder1D(
+    #         d_model=64,
+    #         nhead=4,
+    #         num_layers=2,
+    #         dim_feedforward=128,
+    #         dropout=0.1
+    #     )
 
-                # Step별 저장
-                plt.figure(figsize=(12, 1))
-                sns.heatmap(np.mean(mask_np, axis=0).reshape(1, -1), cmap="viridis",
-                            cbar=True, xticklabels=feature_names)
-                plt.title(f"Step Mask M[{step + 1}] (mean over batch)")
-                step_filename = os.path.join(save_dir, f"{base_filename}_M[{step + 1}].png")
-                plt.savefig(step_filename, bbox_inches="tight")
-                print(f"✅ Saved: {step_filename}")
-                plt.close()
+    #     # ✅ SE block
+    #     self.se = SEBlock(64)
 
-            # === Aggregate ===
-            M_agg_mean = np.mean(step_masks, axis=0)
-            plt.figure(figsize=(12, 1))
-            sns.heatmap(np.mean(M_agg_mean, axis=0).reshape(1, -1), cmap="viridis",
-                        cbar=True, xticklabels=feature_names)
-            plt.title("Aggregate Mask M_agg (mean over batch)")
-            agg_filename = os.path.join(save_dir, f"{base_filename}_M_agg.png")
-            plt.savefig(agg_filename, bbox_inches="tight")
-            print(f"✅ Saved: {agg_filename}")
-            plt.close()
+    #     # ✅ GAP + FC to final embedding
+    #     self.gap = nn.AdaptiveAvgPool1d(1)
+    #     self.fc = nn.Sequential(
+    #         nn.Flatten(),
+    #         nn.Linear(64, embedding_dim)
+    #     )
 
-        else:
-            # Tensor면 그대로 처리
-            M_explain_tensor = M_explain
-            M_agg = M_explain_tensor.detach().cpu().numpy()
-            M_agg_mean = np.mean(M_agg, axis=0)
-            plt.figure(figsize=(12, 1))
-            sns.heatmap(M_agg_mean.reshape(1, -1), cmap="viridis",
-                        cbar=True, xticklabels=feature_names)
-            plt.title("Aggregate Mask M_agg (mean over batch)")
-            agg_filename = os.path.join(save_dir, f"{base_filename}_M_agg.png")
-            plt.savefig(agg_filename, bbox_inches="tight")
-            print(f"✅ Saved: {agg_filename}")
-            plt.close()
-
-    def extract_clinical_features(self, clinical):
-        clinical = clinical.to(self.config.device)
-        z, _ = self.clinical_encoder(clinical)
-        return z
-
-    def visualize_clinical_masks(self, clinical, feature_names, save_dir, base_filename):
-        clinical = clinical.to(self.config.device)
-        return self.clinical_encoder.visualize_masks(clinical, feature_names, save_dir, base_filename)
-
-
+    # def forward(self, x):
+    #     """
+    #     x: [B, 1, L]
+    #     """
+    #     x = self.stem(x)                # [B, 64, L']
+    #     x = self.transformer(x)         # [B, 64, L']
+    #     x = self.se(x)                  # [B, 64, L']
+    #     x = self.gap(x)                 # [B, 64, 1]
+    #     out = self.fc(x)                # [B, embedding_dim]
+    #     return out
 
 
 class ECGMultimodalModel(nn.Module):
@@ -258,9 +201,9 @@ class ECGMultimodalModel(nn.Module):
 
         # ✅ 동일 dimension으로 맞추기
         self.modal_dim = 256  # image, signal, clinical 다 맞춤
-        self.image_dim = 512
-        self.signal_dim = 128
-        self.clinical_dim = 32
+        self.image_dim = self.modal_dim
+        self.signal_dim = self.modal_dim
+        self.clinical_dim = self.modal_dim
 
         # ✅ Image encoder (ResNet18) + LayerNorm
         # self.image_encoder = models.resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
@@ -268,7 +211,8 @@ class ECGMultimodalModel(nn.Module):
         # self.image_encoder.fc = nn.Identity()
         # self.image_norm = nn.LayerNorm(512)
 
-        checkpoint = torch.load('./checkpoints/0711_154435/last.pth', map_location='cpu')
+        # checkpoint = torch.load('./checkpoints/0711_154435/last.pth', map_location='cpu')
+        checkpoint = torch.load('./checkpoints/0716_111810/last.pth', map_location='cpu')
         self.image_encoder.load_state_dict(checkpoint, strict=False)
         # self.load_pretrained_image_encoder(weight_path='./checkpoints/0711_154435/last.pth',
         #                         load_fc=False)
@@ -300,13 +244,22 @@ class ECGMultimodalModel(nn.Module):
         # )
         # self.signal_norm = nn.LayerNorm(self.modal_dim)
 
-        # ✅ Clinical branch: TabNet encoder!
-        self.clinical_encoder = ClinicalTabNetEncoder(
-            input_dim=self.get_clinical_feature_dim(),
-            latent_dim=32,
-            device=config.device  # ✅ 멀티모달도 동일
+        # ✅ Clinical encoder + LayerNorm
+        # self.clinical_encoder = nn.Sequential(
+        #     nn.Linear(self.get_clinical_feature_dim(), 32),
+        #     nn.BatchNorm1d(32),
+        #     nn.ReLU(),
+        #     nn.Dropout(0.3)
+        # )
+        # self.clinical_norm = nn.LayerNorm(32)
+
+        self.clinical_encoder = nn.Sequential(
+            nn.Linear(self.get_clinical_feature_dim(), 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(64, self.clinical_dim)
         )
-        self.load_pretrained_clinical_encoder('./checkpoints/clinical/best.pth')
         self.clinical_norm = nn.LayerNorm(self.clinical_dim)
 
         # ✅ Branch classifiers
@@ -336,10 +289,22 @@ class ECGMultimodalModel(nn.Module):
         )
 
     def get_clinical_feature_dim(self):
-        return 2
-
-    def load_pretrained_clinical_encoder(self, weight_path):
-        self.clinical_encoder.load_pretrained_partial(weight_path)
+        return 24
+    
+    # def load_pretrained_image_encoder(self, weight_path, load_fc=False):
+    #     checkpoint = torch.load(weight_path, map_location='cpu')
+    #     if not load_fc:
+    #         checkpoint = {
+    #             k: v for k, v in checkpoint.items()
+    #             # if not k.startswith('classifier')
+    #             if not k.startswith('classifier.4')
+    #         }
+    #     missing, unexpected = self.signal_encoder.load_state_dict(checkpoint, strict=False)
+    #     print(f"✅ Loaded pretrained signal encoder from {weight_path}")
+    #     if missing:
+    #         print(f"⚠️  Missing keys: {missing}")
+    #     if unexpected:
+    #         print(f"⚠️  Unexpected keys: {unexpected}")
 
     def load_pretrained_signal_encoder(self, weight_path, load_fc=False):
         checkpoint = torch.load(weight_path, map_location='cpu')
@@ -364,7 +329,7 @@ class ECGMultimodalModel(nn.Module):
         signal_feat = self.signal_encoder(ecg_signal)
         signal_feat = self.signal_norm(signal_feat)
 
-        clinical_feat,_ = self.clinical_encoder(clinical)
+        clinical_feat = self.clinical_encoder(clinical)
         clinical_feat = self.clinical_norm(clinical_feat)
 
         # 각 Modality의 Feature 분포 확인
@@ -384,8 +349,7 @@ class ECGMultimodalModel(nn.Module):
         var_img = torch.var(img_feat, dim=1).mean()
         var_signal = torch.var(signal_feat, dim=1).mean()
         var_clinical = torch.var(clinical_feat, dim=1).mean()
-        var_loss = torch.abs(var_img - var_signal) + torch.abs(var_img - var_clinical) + torch.abs(
-            var_signal - var_clinical)
+        var_loss = torch.abs(var_img - var_signal) + torch.abs(var_img - var_clinical) + torch.abs(var_signal - var_clinical)
 
         return img_logits, signal_logits, clinical_logits, fusion_logits, var_loss, soft_weights
 

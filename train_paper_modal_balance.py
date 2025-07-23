@@ -1,6 +1,5 @@
-# train_final.py
+# train_paper_modal_balance.py
 
-import pandas as pd
 import os
 import time
 import torch
@@ -11,10 +10,9 @@ from tqdm import tqdm
 
 from config import Config
 from dataset import get_dataloaders
-from multimodal import ECGMultimodalModel
+from multimodal_paper_modal_balance import ECGMultimodalModel
 
-from sklearn.metrics import roc_auc_score, f1_score, confusion_matrix, ConfusionMatrixDisplay, classification_report, \
-    roc_curve
+from sklearn.metrics import roc_auc_score, f1_score, confusion_matrix, ConfusionMatrixDisplay, classification_report, roc_curve
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -29,7 +27,7 @@ def main():
     model = ECGMultimodalModel(Config).to(device)
 
     criterion = nn.CrossEntropyLoss()
-    # optimizer = Adam(model.parameters(), lr=Config.lr)
+    optimizer = Adam(model.parameters(), lr=Config.lr)
 
     # ✅ Encoder freeze (fusion classifier만 학습)
     for param in model.image_encoder.parameters():
@@ -53,7 +51,7 @@ def main():
     lr_reduce_counter = 0
 
     for epoch in tqdm(range(Config.num_epochs)):
-        print(f"\n=== Epoch [{epoch + 1}/{Config.num_epochs}] ===")
+        print(f"\n=== Epoch [{epoch+1}/{Config.num_epochs}] ===")
         model.train()
         train_loss, correct_train, total_train = 0.0, 0, 0
 
@@ -71,6 +69,7 @@ def main():
             loss_clinical = criterion(clinical_logits, labels)
             loss_fusion = criterion(fusion_logits, labels)
 
+            # total_loss = loss_fusion + 1.0 * (loss_img + loss_signal + loss_clinical)
             # total_loss = (
             #     loss_fusion + 1.0 * (loss_img + loss_signal + loss_clinical)
             #     + 0.1 * var_loss  # variance regularization 비율 튜닝!
@@ -103,7 +102,9 @@ def main():
                 loss_clinical = criterion(clinical_logits, labels)
                 loss_fusion = criterion(fusion_logits, labels)
 
+                # total_batch_loss = loss_fusion + 1.0 * (loss_img + loss_signal + loss_clinical)
                 # total_batch_loss = loss_fusion + 1.0 * (loss_img + loss_signal + loss_clinical) + 0.1 * var_loss
+                # total_batch_loss = loss_fusion
                 total_batch_loss = loss_fusion + 0.1 * var_loss
                 val_loss += total_batch_loss.item()
                 val_var_loss += var_loss.item()
@@ -127,6 +128,10 @@ def main():
         writer.add_scalar("Accuracy/Val", val_acc, epoch)
 
         # 🔑 Attention weights Logging
+        # attn = model.attention_fusion
+        # writer.add_scalar("AttentionWeights/Image_w", attn.image_w.item(), epoch)
+        # writer.add_scalar("AttentionWeights/Signal_w", attn.signal_w.item(), epoch)
+        # writer.add_scalar("AttentionWeights/Clinical_w", attn.clinical_w.item(), epoch)
         attn_weights = soft_weights.detach().cpu()
         writer.add_scalar("AttentionWeights/Image_w", attn_weights[0].item(), epoch)
         writer.add_scalar("AttentionWeights/Signal_w", attn_weights[1].item(), epoch)
@@ -138,12 +143,12 @@ def main():
               f"Image={attn_weights[0].item():.4f} | "
               f"Signal={attn_weights[1].item():.4f} | "
               f"Clinical={attn_weights[2].item():.4f}")
-
+        
         torch.save(model.state_dict(), os.path.join(checkpoint_dir, f"last.pth"))
 
         # Early stop & LR scheduler
         if avg_val_loss < min_val_loss:
-            ckpt_path = os.path.join(checkpoint_dir, f"epoch{epoch + 1}.pth")
+            ckpt_path = os.path.join(checkpoint_dir, f"epoch{epoch+1}.pth")
             torch.save(model.state_dict(), ckpt_path)
             torch.save(model.state_dict(), os.path.join(checkpoint_dir, f"best.pth"))
             print(f"✅ Saved best model to {ckpt_path}")
@@ -163,7 +168,7 @@ def main():
                 lr_reduce_counter = 0
 
             if early_stop_counter >= Config.patience:
-                print(f"⏹️ Early stopping at epoch {epoch + 1}")
+                print(f"⏹️ Early stopping at epoch {epoch+1}")
                 break
 
     writer.flush()
@@ -183,19 +188,6 @@ def main():
         for images, ecg_signals, clinical, labels in tqdm(test_loader, desc="Testing"):
             images, ecg_signals, clinical = images.to(device), ecg_signals.to(device), clinical.to(device)
             labels = labels.to(device)
-            #
-            # print("image shape: ",images.shape)
-            # single_image = images[0] #(1,3,244,244)
-            # image_np = single_image.squeeze(0).cpu().numpy()  # (3, 224, 224)
-            #
-            # with pd.ExcelWriter("./check/image_channels_bk2.xlsx") as writer:
-            #     for i in range(3):
-            #         df = pd.DataFrame(image_np[i])  # shape (224, 224)
-            #         df.to_excel(writer, sheet_name=f"channel{i}", index=False)
-            #
-            # print("ecg: ",ecg_signals)
-            #
-            # print(clinical)
 
             image_logits, signal_logits, clinical_logits, fusion_logits, _, _ = model(images, ecg_signals, clinical)
 
@@ -209,12 +201,10 @@ def main():
             all_preds.extend(predicted.cpu().numpy())
             all_probs.extend(probs.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
-            # print(index)
-            # print(all_preds, all_probs, all_labels)
-
+    
     # 각 branch의 예측 성능 확인
     # print(f"Image Acc: {img_acc.mean().item():.4f}, Signal Acc: {signal_acc.mean().item():.4f}, Clinical Acc: {clinical_acc.mean().item():.4f}")
-    print(all_preds, all_probs, all_labels)
+
     # === Metrics ===
     y_true = np.array(all_labels)
     y_pred = np.array(all_preds)
@@ -285,7 +275,7 @@ def main():
             all_preds.extend(predicted.cpu().numpy())
             all_probs.extend(probs.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
-
+    
     # 각 branch의 예측 성능 확인
     # print(f"Image Acc: {img_acc.mean().item():.4f}, Signal Acc: {signal_acc.mean().item():.4f}, Clinical Acc: {clinical_acc.mean().item():.4f}")
 

@@ -9,6 +9,8 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 import numpy as np
+from scipy.signal import butter, filtfilt
+from pickle import dump
 
 class ECGMultimodalDataset(Dataset):
     def __init__(self, indices, labels_df, ecg_signals, clinical_df,
@@ -22,6 +24,9 @@ class ECGMultimodalDataset(Dataset):
         self.ecg_scaler = ecg_scaler
         self.clinical_scaler = clinical_scaler
 
+        # numerical column 정의
+        self.clinical_numeric_scaler_cols = ["AGE","Wt"]
+
         if self.ecg_scaler is not None:
             self.ecg_signals_scaled = pd.DataFrame(
                 self.ecg_scaler.transform(self.ecg_signals),
@@ -30,13 +35,14 @@ class ECGMultimodalDataset(Dataset):
             )
         else:
             self.ecg_signals_scaled = self.ecg_signals
+            print("None")
 
         if self.clinical_scaler is not None:
-            clinical_numeric = self.clinical_df.drop(columns=['index'])
+            scaled_numeric = self.clinical_df[self.clinical_numeric_scaler_cols]
             self.clinical_scaled = pd.DataFrame(
-                self.clinical_scaler.transform(clinical_numeric),
+                self.clinical_scaler.transform(scaled_numeric),
                 index=self.clinical_df['index'],
-                columns=clinical_numeric.columns
+                columns=self.clinical_numeric_scaler_cols
             )
         else:
             self.clinical_scaled = self.clinical_df.drop(columns=['index'])
@@ -57,10 +63,33 @@ class ECGMultimodalDataset(Dataset):
         if self.transform:
             image = self.transform(image)
 
-        ecg_signal = torch.tensor(self.ecg_signals_scaled.loc[index].values, dtype=torch.float)
+        ecg_signal = self.ecg_signals_scaled.loc[index].values
+        ecg_signal = self.preprocess_signal(ecg_signal)  # ✅ 샘플별로 적용
+        ecg_signal = torch.tensor(ecg_signal, dtype=torch.float)
         clinical = torch.tensor(self.clinical_scaled.loc[index].values, dtype=torch.float)
 
         return image, ecg_signal, clinical, torch.tensor(label, dtype=torch.long)
+    # === 1️⃣ 전처리 함수 (signal_model.py에서 가져옴) ===
+    def z_score_normalize(self, signal):
+        mean = np.mean(signal)
+        std = np.std(signal)
+        return (signal - mean) / (std + 1e-8)
+
+    def remove_baseline_drift(self, signal, window_size=200):
+        baseline = np.convolve(signal, np.ones(window_size) / window_size, mode='same')
+        return signal - baseline
+
+    def lowpass_filter(self, signal, cutoff=0.05, fs=1.0, order=5):
+        nyq = 0.5 * fs
+        normal_cutoff = cutoff / nyq
+        b, a = butter(order, normal_cutoff, btype='low', analog=False)
+        return filtfilt(b, a, signal)
+
+    def preprocess_signal(self, raw_signal):
+        # signal = z_score_normalize(raw_signal)
+        signal = self.remove_baseline_drift(raw_signal)
+        signal = self.lowpass_filter(signal)
+        return signal.copy()  # 연속적인 배열로 반환
 
 def get_dataloaders(config):
     transform = transforms.Compose([
@@ -72,13 +101,14 @@ def get_dataloaders(config):
 
     # === Load data ===
     labels_df = pd.read_excel(config.label_file)
-    clinical_df = pd.read_excel(config.clinical_file)
-    clinical_df = clinical_df[['Wt','AGE','IDX']] # 상관 있는 변수만 사용
+    clinical_df = pd.read_csv(config.clinical_file)
+    clinical_df = clinical_df.drop("ECG", axis=1) # 상관 있는 변수만 사용 -> 전체 변수 사용
     ecg_signals = pd.read_csv(config.ecg_csv, index_col=0)
 
     # === Preprocessing ===
     labels_df = labels_df[labels_df['label'] != 'Borderline']
     labels_df['label'] = labels_df['label'].map({'Normal': 0, 'Abnormal': 1})
+    # labels_df['label'] = labels_df['label'].map({'Normal': 0, 'AF': 1})
 
     if 'IDX' in clinical_df.columns:
         clinical_df = clinical_df.rename(columns={'IDX': 'index'})
@@ -140,7 +170,9 @@ def get_dataloaders(config):
     train_ecg = ecg_signals.loc[ecg_signals.index.isin(train_indices)]
     ecg_scaler = StandardScaler().fit(train_ecg)
 
-    train_clinical = clinical_df[clinical_df['index'].isin(train_indices)].drop(columns=['index'])
+    # train_clinical = clinical_df[clinical_df['index'].isin(train_indices)].drop(columns=['index'])
+    clinical_numeric_scaler_cols = ["AGE","Wt"]
+    train_clinical = clinical_df[clinical_df['index'].isin(train_indices)][clinical_numeric_scaler_cols]
     clinical_scaler = StandardScaler().fit(train_clinical)
 
     train_ds = ECGMultimodalDataset(train_indices, labels_df, ecg_signals, clinical_df,

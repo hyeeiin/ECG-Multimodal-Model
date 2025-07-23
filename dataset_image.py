@@ -2,19 +2,20 @@
 
 import os
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from PIL import Image
 import pandas as pd
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
 import numpy as np
 
 class ECGMultimodalDataset(Dataset):
     def __init__(self, indices, labels_df, ecg_signals, clinical_df,
-                 ecg_scaler=None, clinical_scaler=None, transform=None, config=None):
+                 ecg_scaler=None, clinical_scaler=None, transform=None, image_dir=None):
         self.transform = transform
-        self.config = config
+        self.image_dir = image_dir
 
-        # === Fold별 Subset ===
         self.labels_df = labels_df[labels_df['index'].isin(indices)].reset_index(drop=True)
         self.ecg_signals = ecg_signals.loc[ecg_signals.index.isin(indices)]
         self.clinical_df = clinical_df[clinical_df['index'].isin(indices)].reset_index(drop=True)
@@ -22,7 +23,6 @@ class ECGMultimodalDataset(Dataset):
         self.ecg_scaler = ecg_scaler
         self.clinical_scaler = clinical_scaler
 
-        # === Scale ===
         if self.ecg_scaler is not None:
             self.ecg_signals_scaled = pd.DataFrame(
                 self.ecg_scaler.transform(self.ecg_signals),
@@ -51,7 +51,7 @@ class ECGMultimodalDataset(Dataset):
         label = row['label']
 
         img_path = os.path.join(
-            self.config.image_dir, str(index), f"{str(index).zfill(3)}ECG_lead2.jpg"
+            self.image_dir, str(index), f"{str(index).zfill(3)}ECG_lead2.jpg"
         )
         image = Image.open(img_path).convert('RGB')
 
@@ -63,12 +63,19 @@ class ECGMultimodalDataset(Dataset):
 
         return image, ecg_signal, clinical, torch.tensor(label, dtype=torch.long)
 
-def get_all_data(config):
+def get_dataloaders(config):
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5] * 3, std=[0.5] * 3)
+    ])
+
+    # === Load data ===
     labels_df = pd.read_excel(config.label_file)
     clinical_df = pd.read_csv(config.clinical_file)
-    clinical_df = clinical_df.drop("ECG", axis=1) # 상관 있는 변수만 사용
+    clinical_df = clinical_df.drop("ECG", axis=1)
     ecg_signals = pd.read_csv(config.ecg_csv, index_col=0)
 
+    # === Preprocessing ===
     labels_df = labels_df[labels_df['label'] != 'Borderline']
     labels_df['label'] = labels_df['label'].map({'Normal': 0, 'Abnormal': 1})
 
@@ -99,14 +106,42 @@ def get_all_data(config):
     ecg_signals = ecg_signals.loc[ecg_signals.index.isin(common_indices)]
     clinical_df = clinical_df[clinical_df['index'].isin(common_indices)].reset_index(drop=True)
 
-    transform = transforms.Compose([
-        transforms.Resize((config.img_height, config.img_width)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5]*3, std=[0.5]*3)
-    ])
-    transform.config = config
-
     labels = labels_df['label'].values
     indices = np.arange(len(labels))
 
-    return labels_df, ecg_signals, clinical_df, labels, indices, transform
+    train_idx, temp_idx, _, temp_y = train_test_split(
+        indices, labels, test_size=0.2, stratify=labels, random_state=config.seed
+    )
+
+    val_idx, test_idx = train_test_split(
+        temp_idx, test_size=0.5, stratify=temp_y, random_state=config.seed
+    )
+
+    print(f"🔍 Split: Train={len(train_idx)} Val={len(val_idx)} Test={len(test_idx)}")
+    print(f"Test indices : {test_idx}")
+
+    train_indices = labels_df.iloc[train_idx]['index'].tolist()
+    val_indices = labels_df.iloc[val_idx]['index'].tolist()
+    test_indices = labels_df.iloc[test_idx]['index'].tolist()
+
+    train_ecg = ecg_signals.loc[ecg_signals.index.isin(train_indices)]
+    ecg_scaler = StandardScaler().fit(train_ecg)
+
+    train_clinical = clinical_df[clinical_df['index'].isin(train_indices)].drop(columns=['index'])
+    clinical_scaler = StandardScaler().fit(train_clinical)
+
+    train_ds = ECGMultimodalDataset(train_indices, labels_df, ecg_signals, clinical_df,
+                                     ecg_scaler, clinical_scaler, transform,
+                                     image_dir=config.image_dir)
+    val_ds = ECGMultimodalDataset(val_indices, labels_df, ecg_signals, clinical_df,
+                                   ecg_scaler, clinical_scaler, transform,
+                                   image_dir=config.image_dir)
+    test_ds = ECGMultimodalDataset(test_indices, labels_df, ecg_signals, clinical_df,
+                                    ecg_scaler, clinical_scaler, transform,
+                                    image_dir=config.image_dir)
+
+    train_loader = DataLoader(train_ds, batch_size=config.batch_size, shuffle=True, num_workers=2)
+    val_loader = DataLoader(val_ds, batch_size=config.batch_size, shuffle=False, num_workers=2)
+    test_loader = DataLoader(test_ds, batch_size=config.batch_size, shuffle=False, num_workers=2)
+
+    return train_loader, val_loader, test_loader
