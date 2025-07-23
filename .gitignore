@@ -20,3 +20,5 @@
 ./output
 
 ./ocr/vision_key.json
+__pycache__/
+*.pyc

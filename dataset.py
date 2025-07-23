@@ -66,9 +66,33 @@ class ECGMultimodalDataset(Dataset):
         ecg_signal = self.ecg_signals_scaled.loc[index].values
         ecg_signal = self.preprocess_signal(ecg_signal)  # ✅ 샘플별로 적용
         ecg_signal = torch.tensor(ecg_signal, dtype=torch.float)
+        ecg_signal = self.ecg_signals_scaled.loc[index].values
+        ecg_signal = self.preprocess_signal(ecg_signal)  # ✅ 샘플별로 적용
+        ecg_signal = torch.tensor(ecg_signal, dtype=torch.float)
         clinical = torch.tensor(self.clinical_scaled.loc[index].values, dtype=torch.float)
 
         return image, ecg_signal, clinical, torch.tensor(label, dtype=torch.long)
+    # === 1️⃣ 전처리 함수 (signal_model.py에서 가져옴) ===
+    def z_score_normalize(self, signal):
+        mean = np.mean(signal)
+        std = np.std(signal)
+        return (signal - mean) / (std + 1e-8)
+
+    def remove_baseline_drift(self, signal, window_size=200):
+        baseline = np.convolve(signal, np.ones(window_size) / window_size, mode='same')
+        return signal - baseline
+
+    def lowpass_filter(self, signal, cutoff=0.05, fs=1.0, order=5):
+        nyq = 0.5 * fs
+        normal_cutoff = cutoff / nyq
+        b, a = butter(order, normal_cutoff, btype='low', analog=False)
+        return filtfilt(b, a, signal)
+
+    def preprocess_signal(self, raw_signal):
+        # signal = z_score_normalize(raw_signal)
+        signal = self.remove_baseline_drift(raw_signal)
+        signal = self.lowpass_filter(signal)
+        return signal.copy()  # 연속적인 배열로 반환
     # === 1️⃣ 전처리 함수 (signal_model.py에서 가져옴) ===
     def z_score_normalize(self, signal):
         mean = np.mean(signal)
