@@ -71,7 +71,7 @@ class ECGMultimodalDataset(Dataset):
         ecg_signal = torch.tensor(ecg_signal, dtype=torch.float)
         clinical = torch.tensor(self.clinical_scaled.loc[index].values, dtype=torch.float)
 
-        return image, ecg_signal, clinical, torch.tensor(label, dtype=torch.long)
+        return image, ecg_signal, clinical, torch.tensor(label, dtype=torch.long), index
     # === 1️⃣ 전처리 함수 (signal_model.py에서 가져옴) ===
     def z_score_normalize(self, signal):
         mean = np.mean(signal)

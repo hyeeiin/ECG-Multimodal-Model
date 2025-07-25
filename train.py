@@ -180,7 +180,7 @@ def main():
     img_acc, signal_acc, clinical_acc = [], [], []
 
     with torch.no_grad():
-        for images, ecg_signals, clinical, labels in tqdm(test_loader, desc="Testing"):
+        for images, ecg_signals, clinical, labels, index in tqdm(test_loader, desc="Testing"):
             images, ecg_signals, clinical = images.to(device), ecg_signals.to(device), clinical.to(device)
             labels = labels.to(device)
             #
@@ -269,7 +269,7 @@ def main():
     img_acc, signal_acc, clinical_acc = [], [], []
 
     with torch.no_grad():
-        for images, ecg_signals, clinical, labels in tqdm(test_loader, desc="Testing"):
+        for images, ecg_signals, clinical, labels, index in tqdm(test_loader, desc="Testing"):
             images, ecg_signals, clinical = images.to(device), ecg_signals.to(device), clinical.to(device)
             labels = labels.to(device)
 
@@ -285,6 +285,8 @@ def main():
             all_preds.extend(predicted.cpu().numpy())
             all_probs.extend(probs.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
+
+            # print(index)
 
     # 각 branch의 예측 성능 확인
     # print(f"Image Acc: {img_acc.mean().item():.4f}, Signal Acc: {signal_acc.mean().item():.4f}, Clinical Acc: {clinical_acc.mean().item():.4f}")

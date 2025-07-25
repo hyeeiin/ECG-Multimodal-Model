@@ -71,15 +71,19 @@ class SignalOnlyDataset(Dataset):
 
 # === 3️⃣ Dataloader split ===
 def get_signalonly_dataloaders():
-    labels_df = pd.read_excel(Config.af_label_file)
+    # labels_df = pd.read_excel(Config.af_label_file)
+    labels_df = pd.read_excel(Config.arrhythmia_label_file)
     ecg_signals = pd.read_csv(Config.ecg_csv, index_col=0)
 
     labels_df['index'] = labels_df['index'].astype(int)
     ecg_signals.index = ecg_signals.index.astype(int)
 
-    # 1. AF(=1), Normal(=0) 필터링
-    labels_df = labels_df[(labels_df['label'] != 'Normal')]
-    labels_df['label'] = labels_df['label'].map({'Abnormal': 0, 'AF': 1, 'Borderline': 0})
+    # # 1. AF(=1), Normal(=0) 필터링
+    # labels_df = labels_df[(labels_df['label'] != 'Normal')]
+    # labels_df['label'] = labels_df['label'].map({'Abnormal': 0, 'AF': 1, 'Borderline': 0})
+    # 1. Arrhythmia(=1), Abnormal(=0) 필터링
+    labels_df = labels_df[(labels_df['label'] != 'Normal') & (labels_df['label'] != 'Borderline')]
+    labels_df['label'] = labels_df['label'].map({'Abnormal': 0, 'Arrhythmia': 1})
 
     # 2. 인덱스 정합성 체크
     valid_indices = set(labels_df['index']) & set(ecg_signals.index)
@@ -90,28 +94,42 @@ def get_signalonly_dataloaders():
     af_df = labels_df[labels_df['label'] == 1]
     normal_df = labels_df[labels_df['label'] == 0]
 
-    assert len(af_df) == 6, f"AF 데이터는 6개여야 합니다. 현재: {len(af_df)}개"
+    # assert len(af_df) == 6, f"AF 데이터는 6개여야 합니다. 현재: {len(af_df)}개"
+    # assert len(normal_df) == 52, f"AF 데이터는 6개여야 합니다. 현재: {len(normal_df)}개"
 
-    # 4. AF: 2 train, 2 val, 2 test (총 6개라고 가정)
-    af_indices = af_df['index'].tolist()
-    np.random.seed(Config.seed)
-    np.random.shuffle(af_indices)
-    af_train = af_indices[:2]
-    af_test = af_indices[2:]
+    # # 4. AF: 2 train, 2 val, 2 test (총 6개라고 가정)
+    # af_indices = af_df['index'].tolist()
+    # np.random.seed(Config.seed)
+    # np.random.shuffle(af_indices)
+    # af_train = af_indices[:2]
+    # af_test = af_indices[2:]
 
-    # 5. Normal: 200개 중 120 train, 40 val, 40 test
-    normal_indices = normal_df['index'].tolist()
-    np.random.shuffle(normal_indices)
-    normal_train = normal_indices[:68]
-    normal_val = normal_indices[68:90]
-    normal_test = normal_indices[90:]
+    # # 5. Normal: 200개 중 120 train, 40 val, 40 test
+    # normal_indices = normal_df['index'].tolist()
+    # np.random.shuffle(normal_indices)
+    # normal_train = normal_indices[:68]
+    # normal_val = normal_indices[68:90]
+    # normal_test = normal_indices[90:]
 
-    # 6. 최종 인덱스
-    train_indices = af_train + normal_train
-    val_indices = normal_val
-    test_indices = af_test + normal_test
+    # # 6. 최종 인덱스
+    # train_indices = af_train + normal_train
+    # val_indices = normal_val
+    # test_indices = af_test + normal_test
 
-    print(test_indices)
+    # arrhythmia는 42개, abnormal은 52개로 꽤나 balanced
+    indices = labels_df.index.tolist()
+    labels = labels_df['label'].values
+    
+    train_idx, temp_idx, _, temp_y = train_test_split(
+        indices, labels, test_size=0.2, stratify=labels, random_state=Config.seed
+    )
+    val_idx, test_idx = train_test_split(
+        temp_idx, test_size=0.5, stratify=temp_y, random_state=Config.seed
+    )
+
+    train_indices = labels_df.iloc[train_idx]['index'].tolist()
+    val_indices = labels_df.iloc[val_idx]['index'].tolist()
+    test_indices = labels_df.iloc[test_idx]['index'].tolist()
 
     # 7. 스케일러 학습은 train set으로만
     train_ecg = ecg_signals.loc[ecg_signals.index.isin(train_indices)]
@@ -240,7 +258,7 @@ def main():
     train_loader, val_loader, test_loader = get_signalonly_dataloaders()
 
     model = ResNet1D_SE().to(device)
-    model.load_state_dict(torch.load("./checkpoints/signal/0718_115500/best.pth"))
+    # model.load_state_dict(torch.load("./checkpoints/signal/0718_115500/best.pth"))
     criterion = FocalLoss(alpha=1.0, gamma=2.0)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
