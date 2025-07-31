@@ -74,7 +74,7 @@
 //   },
 // });
 
-import EcgUploadScreen from '../../screens/EcgUploadScreen';
+import EcgUploadScreen from './EcgUploadScreen';
 
 export default function App() {
   return <EcgUploadScreen />;
